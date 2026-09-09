@@ -1,67 +1,88 @@
-# Debug and Refactor — db_manager
+# Debug and Refactor — db_manager + HTTP API
 
-Рефакторинг исходного `utils.py` в пакетную OOP-архитектуру с
-потокобезопасностью, безопасным хранением паролей (bcrypt) и параметризованными
-SQL-запросами.
+Рефакторинг исходного `utils.py` и битого `api.py` в пакетную OOP-архитектуру с
+потокобезопасностью, безопасным хранением паролей (bcrypt), параметризованными
+SQL-запросами и масштабируемым Flask-слоем.
 
 ## Структура проекта
 
 ```
 Debug and Refactor/
-├── db_manager/                 # основной пакет
-│   ├── __init__.py             # публичный API
+├── db_manager/                 # доменный слой
+│   ├── __init__.py
 │   ├── database.py             # Database — контекст-менеджер для SQLite
 │   ├── user_repository.py      # UserRepository — CRUD пользователей
 │   ├── password_service.py     # PasswordService — bcrypt + потокобезопасный файл
 │   └── active_users.py         # ActiveUsers — потокобезопасная очередь
+├── api/                        # транспортный слой (Flask)
+│   ├── __init__.py             # create_app
+│   ├── factory.py              # фабрика приложения
+│   ├── config.py               # APIConfig — dataclass из env
+│   ├── extensions.py           # синглтоны + per-request DB
+│   ├── errors.py               # APIError + обработчики
+│   ├── schemas.py              # валидация JSON
+│   └── routes.py               # Blueprint /health, /users, /active
 ├── tests/
-│   └── test_db_manager.py      # 14 тестов (pytest)
+│   ├── test_db_manager.py      # 14 тестов доменного слоя
+│   └── test_api.py             # 12 тестов HTTP-слоя
 ├── utils.py                    # обратно-совместимый фасад
+├── wsgi.py                     # точка входа для запуска API
 ├── requirements.txt
 ├── .env.example
-├── start.bat                   # авто-деплой: stop → clean → install → test
+├── start.bat                   # авто-деплой + тесты + запуск
 └── README.md
 ```
 
-## Что исправлено относительно исходного `utils.py`
+## Что исправлено относительно битого `api.py`
 
-| Проблема                                            | Решение                                                |
-| --------------------------------------------------- | ------------------------------------------------------ |
-| SQL-инъекция в `add_user` и `get_user_by_name`      | Параметризованные запросы через `?`-плейсхолдеры       |
-| Соединение SQLite не закрывалось при ошибке         | `Database` как контекст-менеджер с `commit/rollback`   |
-| `tags=[]` мутируемый аргумент по умолчанию          | `tags=None` + `list(tags)` внутри функции              |
-| Возврат `str` вместо `int` id                       | `return int(cur.lastrowid)`                            |
-| "Хеш" пароля через `password[::-1]`                 | `bcrypt.hashpw` + `bcrypt.gensalt(rounds=12)`          |
-| Файл паролей не закрывался                          | `with self._path.open(...) as fh`                      |
-| Race condition в `active_users`                     | `threading.Lock` + `collections.deque(maxlen=...)`     |
-| `get_user_by_name` возвращал `{}` для отсутствующих | Возвращает `None` (контракт соблюдён)                  |
-| Дублирование функции в файле                        | Удалено; единая реализация в `password_service.py`     |
-| Всё в одном файле                                   | Разделение на пакет с единственной ответственностью    |
+| Проблема                                           | Решение                                          |
+| -------------------------------------------------- | ------------------------------------------------ |
+| `sqlite3.conn@ct(...)` — синтаксическая ошибка     | `Database(db_path)` контекст-менеджер            |
+| `methods=["POST")` — лишняя скобка                 | `methods=["POST"]` (валидный список)             |
+| `fINSERT ... VALUES('{name}')` — f-string +инъекция| Параметризованные запросы `?`                     |
+| `select id,name from users where id="+uid` —инъекция | Параметризованные запросы в `UserRepository`    |
+| Глобальный `conn` (race conditions)                | Per-request соединение через `flask.g`            |
+| `return jsonify({...}))` — лишняя скобка           | `return flask.jsonify(...), status`              |
+| Статус `201` на чтение                             | `GET` возвращает `200`, `POST` — `201`           |
+| `app.route("/user/<uid>")` без указания типа       | `/users/<int:user_id>` + Blueprint               |
+| Нет валидации входа                                | `schemas.validate_create_user`                   |
+| Нет обработки ошибок                              | `errors.register_error_handlers` → JSON-ответы   |
+| Всё в одном файле                                  | Пакет `api/` с фабрикой, blueprints, сервисами   |
+
+## Эндпоинты API
+
+| Метод  | Путь                              | Описание                          |
+| ------ | --------------------------------- | --------------------------------- |
+| GET    | `/health`                         | healthcheck                        |
+| POST   | `/users`                          | создать пользователя              |
+| GET    | `/users`                          | список пользователей              |
+| GET    | `/users/<id>`                     | получить пользователя              |
+| POST   | `/users/<id>/password`            | сохранить bcrypt-хеш пароля        |
+| GET    | `/active`                         | активные пользователи             |
+
+Примеры:
+
+```bash
+curl -X POST http://127.0.0.1:5000/users -H "Content-Type: application/json" \
+     -d '{"name":"alice","tags":["vip"]}'
+curl http://127.0.0.1:5000/users/1
+curl -X POST http://127.0.0.1:5000/users/1/password -H "Content-Type: application/json" \
+     -d '{"password":"hunter2"}'
+curl http://127.0.0.1:5000/active
+```
 
 ## Установка и запуск
 
 ```bash
 pip install -r requirements.txt
-start.bat            # Windows: stop → clean → install → test
+start.bat            # Windows: stop → clean → install → test → run API
 ```
 
 Или вручную:
 
 ```bash
 python -m pytest tests -q
-```
-
-## Использование
-
-```python
-import utils
-
-uid = utils.add_user("alice", tags=["vip"])     # int
-utils.store_password(uid, "s3cret!")            # bcrypt-хеш в passwords.txt
-assert utils.verify_password(uid, "s3cret!") is True
-
-utils.set_active(uid)
-print(utils.get_active_users())
+python wsgi.py
 ```
 
 ## Конфигурация (`.env.example`)
@@ -71,6 +92,9 @@ DB_PATH=users.db
 PASSWORDS_FILE=passwords.txt
 BCRYPT_ROUNDS=12
 ACTIVE_USERS_MAXLEN=5
+API_HOST=127.0.0.1
+API_PORT=5000
+API_DEBUG=0
 LLM_BASE_URL=https://api.aitunnel.ru/v1
 LLM_MODEL=minimax-m3
 ```
@@ -79,9 +103,9 @@ LLM_MODEL=minimax-m3
 
 ```
 $ python -m pytest tests -q
-..............                                  [100%]
-14 passed in 0.51s
+..................                                  [100%]
+26 passed
 ```
 
-Покрытие: thread-safety, валидация, SQL-инъекции, корректность JSON,
-bcrypt round-trip, фасад `utils.py`.
+Покрытие: thread-safety, валидация, SQL-инъекции, bcrypt round-trip,
+HTTP-коды, фасад `utils.py`, фабрика Flask.

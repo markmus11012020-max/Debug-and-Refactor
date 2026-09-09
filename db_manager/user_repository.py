@@ -55,3 +55,36 @@ class UserRepository:
         """Удаляет пользователя; возвращает количество удалённых строк."""
         cur = self._conn.execute("DELETE FROM users WHERE name = ?", (name,))
         return cur.rowcount
+
+    def get_user_by_id(self, user_id: int) -> Optional[dict[str, Any]]:
+        """Возвращает пользователя по ``id`` или ``None``.
+
+        Используется HTTP-слоем для эндпоинта ``GET /users/<id>``.
+        Параметризованный запрос — безопасен от SQL-инъекций.
+        """
+        cur = self._conn.execute(
+            "SELECT id, name, tags FROM users WHERE id = ?",
+            (int(user_id),),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        try:
+            tags = json.loads(row["tags"])
+        except (TypeError, ValueError):
+            tags = []
+        return {"id": int(row["id"]), "name": row["name"], "tags": tags}
+
+    def list_users(self) -> list[dict[str, Any]]:
+        """Возвращает всех пользователей, упорядоченных по ``id``."""
+        rows = self._conn.execute(
+            "SELECT id, name, tags FROM users ORDER BY id"
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                tags = json.loads(row["tags"])
+            except (TypeError, ValueError):
+                tags = []
+            out.append({"id": int(row["id"]), "name": row["name"], "tags": tags})
+        return out
