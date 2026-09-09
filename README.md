@@ -109,3 +109,298 @@ $ python -m pytest tests -q
 
 Покрытие: thread-safety, валидация, SQL-инъекции, bcrypt round-trip,
 HTTP-коды, фасад `utils.py`, фабрика Flask.
+
+---
+
+## 🐳 Docker — локальный запуск и публикация на Docker Hub
+
+В репозитории лежат:
+
+| Файл                          | Назначение                                                  |
+| ----------------------------- | ----------------------------------------------------------- |
+| `Dockerfile`                  | Мульти-сборка: target `python` (Flask) и target `go` (default, distroless) |
+| `docker-compose.yml`          | Поднимает один из сервисов через `profiles`                 |
+| `.dockerignore`               | Исключает мусор из контекста сборки                         |
+| `scripts/test_endpoints.sh`   | Проверка всех эндпоинтов через `curl` (Linux/macOS/Git-Bash)|
+| `scripts/test_endpoints.bat`  | То же для Windows `cmd.exe`                                 |
+
+### 1. Сборка и запуск **локально** (без Docker Hub)
+
+```bash
+# Python-версия
+docker build --target python -t debug-refactor:py .
+docker run --rm -p 5000:5000 -v py_data:/data debug-refactor:py
+
+# Go-версия (по умолчанию)
+docker build -t debug-refactor:go .
+docker run --rm -p 5000:5000 -v go_data:/data debug-refactor:go
+```
+
+Или через Compose:
+
+```bash
+docker compose --profile python up --build      # Flask
+docker compose --profile go     up --build      # Go (default)
+```
+
+В обоих случаях API слушает `http://127.0.0.1:5000`. Данные
+пользователей и bcrypt-файл лежат в Docker-volume `py_data`/`go_data`.
+
+### 2. Проверка эндпоинтов
+
+```bash
+# Linux / macOS / Git-Bash
+./scripts/test_endpoints.sh
+
+# Windows cmd.exe
+scripts\test_endpoints.bat
+
+# Удалённый сервер
+BASE_URL=http://my-server:5000 ./scripts/test_endpoints.sh
+```
+
+Скрипт проходит 13 кейсов (health, create, get, list, set-password,
+active, edge-cases) и печатает `OK / FAIL` для каждого.
+
+### 3. Публикация на Docker Hub
+
+#### 3.1. Подготовка аккаунта
+
+```bash
+# Регистрация (если нет): https://hub.docker.com/signup
+docker login
+# введите логин и пароль; для 2FA — Personal Access Token
+```
+
+> В примерах ниже используется namespace `markmus11012020` и репозиторий
+> `debug-refactor` (поменяйте на свой, если нужно).
+
+#### 3.2. Тег образов
+
+```bash
+# Go (default)
+docker build -t markmus11012020/debug-refactor:go-1.0.0 .
+docker build --target go -t markmus11012020/debug-refactor:go \
+                                 -t markmus11012020/debug-refactor:latest .
+
+# Python
+docker build --target python \
+  -t markmus11012020/debug-refactor:py-1.0.0 \
+  -t markmus11012020/debug-refactor:py .
+```
+
+#### 3.3. Push
+
+```bash
+docker push markmus11012020/debug-refactor:go-1.0.0
+docker push markmus11012020/debug-refactor:go
+docker push markmus11012020/debug-refactor:py-1.0.0
+docker push markmus11012020/debug-refactor:py
+```
+
+Проверить, что образ доступен:
+https://hub.docker.com/r/markmus11012020/debug-refactor/tags
+
+#### 3.4. Автоматизация через GitHub Actions (опционально)
+
+Файл `.github/workflows/docker-publish.yml`:
+
+```yaml
+name: docker-publish
+on:
+  push:
+    tags: ["v*.*.*"]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build & push (go)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: go
+          push: true
+          tags: |
+            markmus11012020/debug-refactor:go-${{ github.ref_name }}
+            markmus11012020/debug-refactor:latest
+      - name: Build & push (py)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: python
+          push: true
+          tags: markmus11012020/debug-refactor:py-${{ github.ref_name }}
+```
+
+Секреты `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` добавляются в
+Settings → Secrets → Actions репозитория.
+
+---
+
+## 🚀 Запуск на сервере (пошагово)
+
+### Шаг 1. Подключение к серверу
+
+```bash
+ssh user@my-server
+```
+
+### Шаг 2. Установка Docker (если ещё нет)
+
+```bash
+# Ubuntu / Debian
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+sudo usermod -aG docker $USER
+newgrp docker
+docker --version
+docker compose version
+```
+
+### Шаг 3. Создание рабочей директории
+
+```bash
+mkdir -p ~/debug-refactor && cd ~/debug-refactor
+```
+
+### Шаг 4. Подготовка файлов на сервере
+
+На сервере нужны **только** эти файлы (всё остальное — внутри образа):
+
+```bash
+# Вариант А — клонировать репозиторий
+git clone https://github.com/markmus11012020-max/Debug-and-Refactor.git .
+git checkout main
+
+# Вариант Б — скачать только нужные файлы вручную
+nano docker-compose.yml   # вставить содержимое из репозитория
+mkdir -p scripts
+nano scripts/test_endpoints.sh
+chmod +x scripts/test_endpoints.sh
+```
+
+`docker-compose.yml` рекомендуется адаптировать под прод:
+
+```yaml
+services:
+  api-go:
+    image: markmus11012020/debug-refactor:go-1.0.0   # зафиксированный тег
+    container_name: debug-refactor-go
+    restart: unless-stopped
+    ports:
+      - "80:5000"          # отдаём наружу на 80-м порту
+    environment:
+      DB_PATH: /data/users.db
+      PASSWORDS_FILE: /data/passwords.txt
+      BCRYPT_ROUNDS: "12"
+      ACTIVE_USERS_MAXLEN: "5"
+      API_HOST: 0.0.0.0
+      API_PORT: "5000"
+    volumes:
+      - go_data:/data       # данные переживают перезапуск контейнера
+volumes:
+  go_data:
+```
+
+### Шаг 5. Запуск
+
+```bash
+# Если compose-файл не используется — качаем напрямую из Docker Hub
+docker run -d \
+  --name debug-refactor-go \
+  --restart unless-stopped \
+  -p 80:5000 \
+  -v go_data:/data \
+  markmus11012020/debug-refactor:go-1.0.0
+
+# Или через compose
+docker compose up -d
+```
+
+Проверка состояния:
+
+```bash
+docker ps
+docker logs -f debug-refactor-go    # Ctrl+C для выхода
+docker exec -it debug-refactor-go ls /data   # данные внутри тома
+```
+
+### Шаг 6. Открыть порты в файрволe
+
+```bash
+# UFW
+sudo ufw allow 80/tcp
+sudo ufw allow OpenSSH
+sudo ufw enable
+
+# iptables (если UFW нет)
+sudo iptables -A INPUT -p tcp --dport 80 -j ACCEPT
+```
+
+Если сервер за cloud-фаерволом (AWS Security Group, GCP Firewall и т.п.) —
+добавьте inbound-правило TCP/80 для вашего IP/подсети.
+
+### Шаг 7. HTTPS (рекомендуется)
+
+```bash
+# Самый быстрый способ — Caddy (автоматический Let's Encrypt):
+sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+sudo apt update && sudo apt install caddy
+
+# /etc/caddy/Caddyfile
+:80 {
+    reverse_proxy debug-refactor-go:5000
+}
+sudo systemctl reload caddy
+```
+
+### Шаг 8. Проверка эндпоинтов на сервере
+
+```bash
+# Изнутри сервера
+curl http://127.0.0.1/health
+./scripts/test_endpoints.sh
+
+# С вашей машины (пример)
+BASE_URL=http://my-server ./scripts/test_endpoints.sh
+```
+
+### Шаг 9. Обновление версии
+
+```bash
+cd ~/debug-refactor
+docker compose pull                # если compose
+# или
+docker pull markmus11012020/debug-refactor:go-1.0.1
+docker stop debug-refactor-go
+docker rm   debug-refactor-go
+docker run -d --name debug-refactor-go --restart unless-stopped \
+  -p 80:5000 -v go_data:/data markmus11012020/debug-refactor:go-1.0.1
+```
+
+### Шаг 10. Бэкап данных
+
+```bash
+docker run --rm -v go_data:/data -v $(pwd):/backup \
+  busybox tar czf /backup/users-$(date +%F).tar.gz /data
+```
+
+---
+
+## 📋 Чек-лист «запустить на новом сервере за 5 минут»
+
+1. `ssh user@server`
+2. Установить Docker (`get-docker.sh`).
+3. Скопировать `docker-compose.yml` + `scripts/`.
+4. `docker compose up -d`.
+5. Открыть порт 80 в firewall.
+6. `curl http://127.0.0.1/health` → `{"status":"ok"}`.
+7. `./scripts/test_endpoints.sh` → `All 13 checks passed.`
