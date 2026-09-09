@@ -1,0 +1,322 @@
+openapi: 3.1.0
+info:
+  title: go-server API
+  version: 1.0.0
+  summary: HTTP API порта Python db_manager на Golang
+  description: |
+    REST API для управления пользователями, хранения bcrypt-хешей паролей
+    и ведения LIFO-списка активных пользователей. Полный OOP-аналог
+    Flask-версии из репозитория `Debug and Refactor`.
+  contact:
+    name: Debug and Refactor
+    url: https://github.com/markmus11012020-max/Debug-and-Refactor
+  license:
+    name: MIT
+servers:
+  - url: http://127.0.0.1:5000
+    description: Локальный сервер разработки (по умолчанию из `.env.example`)
+    variables:
+      host:
+        default: 127.0.0.1
+        description: API_HOST
+      port:
+        default: "5000"
+        description: API_PORT
+tags:
+  - name: system
+    description: Служебные эндпоинты
+  - name: users
+    description: Управление пользователями (доменная сущность User)
+  - name: passwords
+    description: Хранение bcrypt-хешей паролей
+  - name: active
+    description: Ограниченный LIFO-список активных пользователей
+paths:
+  /health:
+    get:
+      tags: [system]
+      summary: Проверка работоспособности сервиса
+      description: Возвращает фиксированный JSON `{"status":"ok"}`.
+      operationId: getHealth
+      responses:
+        "200":
+          description: Сервис работает
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+              examples:
+                ok:
+                  value: { status: ok }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /users:
+    get:
+      tags: [users]
+      summary: Список всех пользователей
+      description: |
+        Возвращает всех пользователей из SQLite в порядке возрастания `id`.
+        Если таблица пуста — возвращается пустой массив `[]`.
+      operationId: listUsers
+      responses:
+        "200":
+          description: Массив пользователей
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/User" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/Internal"
+    post:
+      tags: [users]
+      summary: Создать пользователя
+      description: |
+        Создаёт запись в таблице `users`. Имя должно быть непустым
+        (≤ 64 символа). Количество тегов — не более 16, каждый тег
+        непустой и ≤ 32 символа. К переданным тегам автоматически
+        добавляется тег `"new"`.
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UserCreate" }
+            examples:
+              alice:
+                value: { name: alice, tags: [vip] }
+              bob:
+                value: { name: bob, tags: [] }
+      responses:
+        "201":
+          description: Пользователь создан
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: Пользователь с таким именем уже существует
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+              examples:
+                conflict:
+                  value: { error: "user already exists" }
+        "422":
+          $ref: "#/components/responses/Validation"
+        "500":
+          $ref: "#/components/responses/Internal"
+  /users/{user_id}/password:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    post:
+      tags: [passwords]
+      summary: Сохранить bcrypt-хеш пароля пользователя
+      description: |
+        Хеш формируется алгоритмом bcrypt со стоимостью `BCRYPT_ROUNDS`
+        (по умолчанию 12) и дописывается в файл `PASSWORDS_FILE`
+        в формате `<user_id>:<hash>`. В ответе возвращается
+        превью первых 7 символов хеша.
+      operationId: setUserPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PasswordCreate" }
+            examples:
+              pwd:
+                value: { password: hunter2 }
+      responses:
+        "201":
+          description: Хеш успешно сохранён
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PasswordStored" }
+              examples:
+                stored:
+                  value:
+                    id: 1
+                    hashed: true
+                    preview: "$2a$12..."
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Validation"
+        "500":
+          $ref: "#/components/responses/Internal"
+  /active:
+    get:
+      tags: [active]
+      summary: Снимок списка активных пользователей
+      description: |
+        Возвращает массив `user_id` в порядке от самого свежего
+        к самому старому (LIFO). Максимальная длина списка
+        задаётся переменной `ACTIVE_USERS_MAXLEN`.
+      operationId: getActiveUsers
+      responses:
+        "200":
+          description: Список идентификаторов
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: integer, format: int64, minimum: 1 }
+              examples:
+                snapshot:
+                  value: [3, 2, 1]
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /users/{user_id}:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    get:
+      tags: [users]
+      summary: Получить пользователя по идентификатору
+      operationId: getUserById
+      responses:
+        "200":
+          description: Пользователь найден
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Validation"
+        "500":
+          $ref: "#/components/responses/Internal"
+components:
+  parameters:
+    UserId:
+      name: user_id
+      in: path
+      required: true
+      description: Целочисленный идентификатор пользователя
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+  schemas:
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: ok
+          examples: [ok]
+    User:
+      type: object
+      description: Доменная модель пользователя
+      required: [id, name, tags]
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+          examples: [1]
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          examples: [alice]
+        tags:
+          type: array
+          maxItems: 17
+          items:
+            type: string
+            minLength: 1
+            maxLength: 32
+          examples:
+            - [vip, new]
+    UserCreate:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          examples: [alice]
+        tags:
+          type: array
+          maxItems: 16
+          items:
+            type: string
+            minLength: 1
+            maxLength: 32
+          default: []
+    PasswordCreate:
+      type: object
+      required: [password]
+      properties:
+        password:
+          type: string
+          minLength: 1
+          format: password
+          examples: [hunter2]
+    PasswordStored:
+      type: object
+      required: [id, hashed, preview]
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        hashed:
+          type: boolean
+          const: true
+        preview:
+          type: string
+          description: Первые 7 символов bcrypt-хеша + "..."
+          examples: ["$2a$12..."]
+    ApiError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Сообщение об ошибке
+          examples: ["user 1 not found"]
+  responses:
+    BadRequest:
+      description: Недопустимый HTTP-метод или путь
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+          examples:
+            method:
+              value: { error: "method not allowed" }
+    NotFound:
+      description: Пользователь не найден
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+          examples:
+            missing:
+              value: { error: "user 1 not found" }
+    Validation:
+      description: Ошибка валидации тела запроса
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+          examples:
+            invalidId:
+              value: { error: "invalid user id" }
+            emptyName:
+              value: { error: "'name' is required" }
+    Internal:
+      description: Непредвиденная внутренняя ошибка
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+          examples:
+            panic:
+              value: { error: "internal server error" }

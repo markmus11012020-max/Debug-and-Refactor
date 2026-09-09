@@ -25,6 +25,7 @@ go-server/
 │       ├── passwords.go        # bcrypt + потокобезопасный файл
 │       └── active.go           # ограниченный LIFO-список user_id
 ├── tests/handlers_test.go      # httptest-тесты
+├── docs/openapi.yaml           # OpenAPI 3.1 спецификация API
 ├── go.mod / go.sum
 ├── .env.example
 ├── start.bat                   # авто-деплой (Windows)
@@ -147,6 +148,20 @@ go test ./tests/... -v
 
 Покрывают: healthcheck, CRUD, 404, 422, потокобезопасность LLM-модели
 активных пользователей, отсутствие уязвимости к SQL-инъекциям.
+
+## OpenAPI 3.1
+
+Полная спецификация API лежит в [`docs/openapi.yaml`](docs/openapi.yaml).
+Покрывает все эндпоинты (`/health`, `/users`, `/users/{user_id}`,
+`/users/{user_id}/password`, `/active`), схемы (`User`, `UserCreate`,
+`PasswordCreate`, `PasswordStored`, `ApiError`, `Health`) и единые
+ответы ошибок `400/404/422/500`. Используется для генерации клиентов,
+тестов через Schemathesis и валидации контракта.
+
+```bash
+# Просмотр через Swagger UI / Redoc — откройте docs/openapi.yaml в редакторе
+# или разверните локально через swagger-ui-cli.
+```
 
 ## Расширение проекта
 
